@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 
 using System.Threading;
 
+using System.Text.RegularExpressions;
+
 using Motorola.Snapi;
 using Motorola.Snapi.Constants.Enums;
 using Motorola.Snapi.Constants;
@@ -41,6 +43,7 @@ namespace ZebraScannerRebuild
 		public LedMode? ledOff;
 	}
 
+	enum BarcodeType { nid, location, None };
 
 	class ZebraScannerRebuild
 	{
@@ -51,9 +54,10 @@ namespace ZebraScannerRebuild
 		//private static System.Timers.Timer _scanTimer = new System.Timers.Timer(5000) { AutoReset = false };
 		//private static System.Timers.Timer _ledTimer = new System.Timers.Timer(100) { AutoReset = false };
 
-		// FIX THIS
-		private static List<IMotorolaBarcodeScanner> scannerList;
+		// if there were multiple scanners, this should be a dictionary, since there will be multiple timers that may need to be stopped
+		private static ScannerTimer _scanTimer;
 
+		private static Tuple<string, BarcodeType> prevScan;
 
 		public void Start()
 		{
@@ -78,7 +82,10 @@ namespace ZebraScannerRebuild
 
 			notifications.Add("tryDatabase", Tuple.Create((LedMode?)LedMode.GreenOn, (LedMode?)LedMode.GreenOff, 1000, (BeepPattern?)null));
 			notifications.Add("timerUp", Tuple.Create((LedMode?)LedMode.RedOn, (LedMode?)LedMode.RedOff, 50, (BeepPattern?)BeepPattern.TwoLowShort));
+			notifications.Add("barcodeFailure", Tuple.Create((LedMode?)LedMode.RedOn, (LedMode?)LedMode.RedOff, 100, (BeepPattern?)BeepPattern.OneLowLong));
 
+
+			List<IMotorolaBarcodeScanner> scannerList;
 			scannerList = BarcodeScannerManager.Instance.GetDevices();
 			Console.WriteLine("number of connected scanners: " + scannerList.Count);
 
@@ -120,19 +127,91 @@ namespace ZebraScannerRebuild
 		{
 			Console.WriteLine("Barcode scan detected from scanner " + e.ScannerId + ": " + e.Data);
 
+			//UpdateDatabase(e.ScannerId, barcode);
+
+			//_scanTimer.Start();
+
+			// convert barcode to uppercase and strip any whitespace
 			string barcode = e.Data.ToUpper().Trim();
 
-			//UpdateDatabase(e.ScannerId, barcode);
-			var _scanTimer = new ScannerTimer
+			BarcodeType barcodeType = CheckBarcode(barcode);
+
+			if (barcodeType == BarcodeType.None)
 			{
-				Interval = 5000,
-				AutoReset = false,
-				scannerId = e.ScannerId,
-				ledOff = null
-			};
-			_scanTimer.Elapsed += OnScanTimerElapsed;
-			_scanTimer.Start();
-			SendNotification(e.ScannerId, notifications["tryDatabase"]);
+				//_log.Error("Barcode " + e.Data + " not recognized as location or NID");
+				SendNotification(e.ScannerId, notifications["barcodeFailure"]);
+			}
+			else
+			{
+				// if successful scan, then either stop timer or restart start it, so stop here.
+				// stopping timer avoids potential race condition
+				if (_scanTimer != null)
+				{
+					_scanTimer.Stop();
+				}
+
+				_scanTimer = new ScannerTimer
+				{
+					Interval = 5000,
+					AutoReset = false,
+					scannerId = e.ScannerId,
+					ledOff = null
+				};
+				_scanTimer.Elapsed += OnScanTimerElapsed;
+
+				//_log.Debug("Barcode " + barcode + " recognized as type " + barcodeType);
+				Console.WriteLine("Barcode " + barcode + " recognized as type " + barcodeType);
+
+				// case 1: prevScan: null		current: nid1 		-> prevScan: nid1		timer: start	()
+				// case 2: prevScan: null		current: location1	-> prevScan: location1	timer: start	()	 
+				// case 3: prevScan: nid1		current: nid1		-> prevScan: null		timer: stop		(remove nid's location from database)				
+				// case 4: prevScan: nid1		current: nid2		-> prevScan: nid2		timer: start	(overwrite previous nid with new prevScan nid)
+				// case 5: prevScan: nid1		current: location1	-> prevScan: location1	timer: start	(nid scanned first - overwrite with location)
+				// case 6: prevScan: location1	current: location1	-> prevScan: location1	timer: start	(overwrite same location)
+				// case 7: prevScan: location1	current: location2 	-> prevScan: location2	timer: start	(overwrite new location)
+				// case 8: prevScan: location1	current: nid1 		-> prevScan: null		timer: start	(update nid's location in database)
+
+				// cases 1 and 2
+				if (prevScan == null)
+				{
+					_scanTimer.Start();
+					prevScan = Tuple.Create(barcode, barcodeType);
+				}
+				// cases 5,6,7
+				else if (barcodeType == BarcodeType.location)
+				{
+					_scanTimer.Start();
+					prevScan = Tuple.Create(barcode, barcodeType);
+				}
+				else
+				{
+					if (prevScan.Item2 == BarcodeType.nid)
+					{
+						// case 3
+						if (barcode.Equals(prevScan.Item1))
+						{
+							SendNotification(e.ScannerId, notifications["tryDatabase"]);
+							//UpdateDatabase(e.ScannerId, barcode);
+							prevScan = null;
+						}
+						// case 4
+						else
+						{
+							_scanTimer.Start();
+							prevScan = Tuple.Create(barcode, barcodeType);
+						}
+					}
+					// case 8
+					else
+					{
+						SendNotification(e.ScannerId, notifications["tryDatabase"]);
+						string location = prevScan.Item1;
+						//UpdateDatabase(e.ScannerId, barcode, location);
+						prevScan = null;
+					}
+				}
+			}
+			//SendNotification(e.ScannerId, notifications["tryDatabase"]);
 		}
 
 		private static void OnScanTimerElapsed(Object source, System.Timers.ElapsedEventArgs e)
@@ -145,6 +224,7 @@ namespace ZebraScannerRebuild
 			uint scannerCradleId = ((ScannerTimer)source).scannerId;
 			//IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetScannerFromId(scannerId);
 			SendNotification(scannerCradleId, notifications["timerUp"]);
+			prevScan = null;
 		}
 
 		private static void OnLedTimerElapsed(Object source, System.Timers.ElapsedEventArgs e)
@@ -155,6 +235,34 @@ namespace ZebraScannerRebuild
 			IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetScannerFromCradleId(scannerCradleId);
 
 			scanner.Actions.ToggleLed(ledOff);
+		}
+
+		// returns "nid" if barcode scanned is recognized as NID, and "location" if recognized as location
+		public static BarcodeType CheckBarcode(string barcode)
+		{
+			string locationFormat = @"^P[NESW]\d{4}";
+			string nidFormat = @"(\d|[A-F]){10}$";
+
+			if (EvalRegex(locationFormat, barcode))
+			{
+				return BarcodeType.location;
+			}
+			else if (EvalRegex(nidFormat, barcode))
+			{
+				return BarcodeType.nid;
+			}
+			else
+			{
+				return BarcodeType.None;
+			}
+		}
+
+		public static Boolean EvalRegex(string rxStr, string matchStr)
+		{
+			Regex rx = new Regex(rxStr);
+			Match match = rx.Match(matchStr);
+
+			return match.Success;
 		}
 
 		public static void UpdateDatabase(uint scannerId, string nid, string location = null)
