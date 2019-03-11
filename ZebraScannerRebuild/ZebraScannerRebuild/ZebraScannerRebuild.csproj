@@ -35,9 +35,11 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="log4net, Version=2.0.8.0, Culture=neutral, PublicKeyToken=669e0ddf0bb1aa2a, processorArchitecture=MSIL">
+      <HintPath>..\packages\log4net.2.0.8\lib\net45-full\log4net.dll</HintPath>
+    </Reference>
     <Reference Include="Motorola.Snapi, Version=1.1.2.0, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\..\Motorola-Wrapper-Source-Code-my-comments\MotorolaCoreScannerNet-master\MotorolaSnapi\bin\Debug\Motorola.Snapi.dll</HintPath>
+      <HintPath>..\packages\MotorolaCoreScannerNet.1.1.5\lib\net451\Motorola.Snapi.dll</HintPath>
     </Reference>
     <Reference Include="Renci.SshNet, Version=2016.1.0.0, Culture=neutral, PublicKeyToken=1cee9f8bde3db106, processorArchitecture=MSIL">
       <HintPath>..\packages\SSH.NET.2016.1.0\lib\net40\Renci.SshNet.dll</HintPath>
@@ -66,4 +68,11 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="..\packages\MotorolaCoreScannerNet.1.1.5\build\MotorolaCoreScannerNet.targets" Condition="Exists('..\packages\MotorolaCoreScannerNet.1.1.5\build\MotorolaCoreScannerNet.targets')" />
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('..\packages\MotorolaCoreScannerNet.1.1.5\build\MotorolaCoreScannerNet.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MotorolaCoreScannerNet.1.1.5\build\MotorolaCoreScannerNet.targets'))" />
+  </Target>
 </Project>
