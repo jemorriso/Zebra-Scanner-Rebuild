@@ -24,47 +24,52 @@ namespace ZebraScannerRebuild
 {
 	public static class BarcodeScannerManagerExtension
 	{
-		public static IMotorolaBarcodeScanner GetScannerFromCradleId(this BarcodeScannerManager instance, uint scannerId)
-		{
-			foreach (var scanner in instance.GetDevices())
-			{
-				// barcodescanevent is triggered from cradle.
-				// assumption: connected scanner has id (cradle id+1)
-				if (scanner.Info.ScannerId == scannerId+1)
-				{
-					Console.WriteLine("found scanner, id: " + (scannerId+1));
-					return scanner;
-				}
-			}
-			return null;
-		}
+		//public static IMotorolaBarcodeScanner GetScannerFromCradleId(this BarcodeScannerManager instance, uint scannerId)
+		//{
+		//	foreach (var scanner in instance.GetDevices())
+		//	{
+		//		// barcodescanevent is triggered from cradle.
+		//		// assumption: connected scanner has id (cradle id+1)
+		//		if (scanner.Info.ScannerId == scannerId+1)
+		//		{
+		//			Console.WriteLine("found scanner, id: " + (scannerId+1));
+		//			return scanner;
+		//		}
+		//	}
+		//	return null;
+		//}
+	}
+
+	public class ScannerInfo
+	{
+		public IMotorolaBarcodeScanner scanner;
+		public int prefix;
+		public ScannerTimer timer;
+		public Tuple<string, BarcodeType> prevScan;
 	}
 
 	// define timer class that accepts scanner id and led mode so event handler has access to these fields
-	class ScannerTimer : System.Timers.Timer
+	public class ScannerTimer : System.Timers.Timer
 	{
-		public uint scannerId;
+		public int scannerId;
 		// needed for ledtimer, but not scantimer
 		public LedMode? ledOff;
 	}
 
-	enum BarcodeType { nid, location, None };
+	public enum BarcodeType { nid, location, None };
 
 	class ZebraScannerRebuild
 	{
 		private static ConnectionInfo ConnInfo;
-
 		private static readonly ILog _log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
-
 		private static Dictionary<string, Tuple<LedMode?, LedMode?, int, BeepPattern?>> notifications = new Dictionary<string, Tuple<LedMode?, LedMode?, int, BeepPattern?>>();
-
 		// if there were multiple scanners, this should be a dictionary, since there will be multiple timers that may need to be stopped
-		private static Dictionary<uint, ScannerTimer> timers;
+		//private static Dictionary<uint, ScannerTimer> timers;
 		// convert assigned prefix back into scanner ID
-		private static Dictionary<int, uint> prefixes;
+		private static Dictionary<int, int> prefixes;
 		//private static ScannerTimer _scanTimer;
-
+		private static Dictionary<int, ScannerInfo> scanners;
 		private static Tuple<string, BarcodeType> prevScan;
 
 		public static void ConfigureScanners()
@@ -74,8 +79,9 @@ namespace ZebraScannerRebuild
 			// no way to tell which scanner disconnects so reset everything whenever any scanner disconnects
 			// drawback:  events in progress are left incomplete
 			// ***** need to test this
-			prefixes = new Dictionary<int, uint>();
-			timers = new Dictionary<uint, ScannerTimer>();
+			prefixes = new Dictionary<int, int>();
+			scanners = new Dictionary<int, ScannerInfo>();
+			//timers = new Dictionary<uint, ScannerTimer>();
 
 			// want: multipoint-point, low volume, beep / flash green on good decode, mode IBMHID, assign prefix
 			foreach (var scanner in BarcodeScannerManager.Instance.GetDevices())
@@ -98,7 +104,7 @@ namespace ZebraScannerRebuild
 					scanner.Actions.StoreIBMAttribute(145, DataType.Byte, 1);
 
 					// Set beep on BarcodeScanEvent - LED also flashes green (unable to change)
-					scanner.Actions.StoreIBMAttribute(56, DataType.Bool, true);
+					scanner.Actions.StoreIBMAttribute(56, DataType.Bool, false);
 					// Disable laser flashing on BarcodeScanEvent
 					scanner.Actions.StoreIBMAttribute(859, DataType.Byte, 0);
 
@@ -108,17 +114,27 @@ namespace ZebraScannerRebuild
 					// assign letter prefix for identification
 					scanner.Actions.StoreIBMAttribute(105, DataType.Array, asciiPrefix);
 
-					prefixes.Add(asciiPrefix, (uint)scanner.Info.ScannerId);
-					timers.Add((uint)scanner.Info.ScannerId, 
-						new ScannerTimer
+					prefixes.Add(asciiPrefix, scanner.Info.ScannerId);
+					//timers.Add((uint)scanner.Info.ScannerId, null);
+					scanners.Add(
+						scanner.Info.ScannerId,
+						new ScannerInfo
 						{
-							Interval = 5000,
-							AutoReset = false,
-							scannerId = (uint)scanner.Info.ScannerId,
-							ledOff = null
-						});
-					Console.WriteLine("timers: " + timers.Keys);
-					timers[(uint)scanner.Info.ScannerId].Elapsed += OnScanTimerElapsed;
+							scanner = scanner,
+							prefix = asciiPrefix,
+							timer = null,
+							prevScan = null
+						}
+					);
+					//new ScannerTimer
+					//{
+					//	Interval = 5000,
+					//	AutoReset = false,
+					//	scannerId = (uint)scanner.Info.ScannerId,
+					//	ledOff = null
+					//});
+					//Console.WriteLine("timers: " + timers.Keys);
+					//timers[(uint)scanner.Info.ScannerId].Elapsed += OnScanTimerElapsed;
 					asciiPrefix++;
 				}
 			}
@@ -154,7 +170,7 @@ namespace ZebraScannerRebuild
 			_log.Debug("Subscribed for events in BarcodeScannerManager: CCoreScanner.Barcode, CCoreScanner.Pnp");
 			_log.Debug("Subscribed for events in Main: BarcodeScannerManager.ScannerAttached, BarcodeScannerManager.ScannerDetached");
 
-			notifications.Add("tryDatabase", Tuple.Create((LedMode?)LedMode.GreenOn, (LedMode?)LedMode.GreenOff, 1000, (BeepPattern?)null));
+			notifications.Add("tryDatabase", Tuple.Create((LedMode?)LedMode.GreenOn, (LedMode?)LedMode.GreenOff, 1000, (BeepPattern?)BeepPattern.FourLowShort));
 			notifications.Add("timerUp", Tuple.Create((LedMode?)LedMode.RedOn, (LedMode?)LedMode.RedOff, 50, (BeepPattern?)BeepPattern.TwoLowShort));
 			notifications.Add("barcodeFailure", Tuple.Create((LedMode?)LedMode.RedOn, (LedMode?)LedMode.RedOff, 100, (BeepPattern?)BeepPattern.OneLowLong));
 			notifications.Add("databaseFailure", Tuple.Create((LedMode?)LedMode.RedOn, (LedMode?)LedMode.RedOff, 300, (BeepPattern?)BeepPattern.ThreeLowLong));
@@ -204,16 +220,17 @@ namespace ZebraScannerRebuild
 			BarcodeScannerManager.Instance.Close();
 		}
 		// PnpEventArgs doesn't have scanner serial
+		// there is no way of telling which scanner attached / detached
 		private static void OnScannerAttached(object sender, PnpEventArgs e)
 		{
-			_log.Debug("Scanner id=" + e.ScannerId + " attached");
+			_log.Debug("Scanner attached");
 			ConfigureScanners();
 			Console.WriteLine("Scanner id=" + e.ScannerId + " attached");
 		}
 
 		private static void OnScannerDetached(object sender, PnpEventArgs e)
 		{
-			_log.Debug("Scanner id=" + e.ScannerId + " detached");
+			_log.Debug("Scanner detached");
 
 			Console.WriteLine("Scanner id=" + e.ScannerId + " detached");
 		}
@@ -226,17 +243,17 @@ namespace ZebraScannerRebuild
 			// get prefix identifier and convert from char to int
 			int prefix = Convert.ToInt32(e.Data[0]);
 			Console.WriteLine("PREFIX:" + prefix);
-			uint scannerId = prefixes[prefix];
-			// convert barcode to uppercase and strip any whitespace
-			string barcode = e.Data.ToUpper().Trim();
+			int scannerId = prefixes[prefix];
 
+			// chop prefix off barcode, and convert to uppercase and strip any whitespace
+			string barcode = e.Data.Substring(1).ToUpper().Trim();
 			BarcodeType barcodeType = CheckBarcode(barcode);
 
 			if (barcodeType == BarcodeType.None)
 			{
 				_log.Error("Barcode " + e.Data + " not recognized as location or NID");
 				// **** FIX *****
-				SendNotification(e.ScannerId, notifications["barcodeFailure"]);
+				SendNotification(scannerId, notifications["barcodeFailure"]);
 			}
 			else
 			{
@@ -246,11 +263,23 @@ namespace ZebraScannerRebuild
 				//{
 				//	_scanTimer.Stop();
 				//}
-				if (timers[scannerId] != null)
+				//if (timers[scannerId] != null)
+				//{
+				//	timers[scannerId].Stop();
+				//}
+				if (scanners[scannerId].timer != null) 
 				{
-					timers[scannerId].Stop();
+					scanners[scannerId].timer.Stop();
 				}
-
+				scanners[scannerId].timer = new ScannerTimer
+				{
+					Interval = 5000,
+					AutoReset = false,
+					scannerId = scannerId,
+					ledOff = null
+				};
+				scanners[scannerId].timer.Elapsed += OnScanTimerElapsed;
+				//_scanTimer.Elapsed += OnScanTimerElapsed;
 				//_scanTimer = new ScannerTimer
 				//{
 				//	Interval = 5000,
@@ -260,14 +289,14 @@ namespace ZebraScannerRebuild
 				//};
 				//_scanTimer.Elapsed += OnScanTimerElapsed;
 
-				timers[scannerId] = new ScannerTimer
-				{
-					Interval = 5000,
-					AutoReset = false,
-					scannerId = scannerId,
-					ledOff = null
-				};
-				timers[scannerId].Elapsed += OnScanTimerElapsed;
+				//timers[scannerId] = new ScannerTimer
+				//{
+				//	Interval = 5000,
+				//	AutoReset = false,
+				//	scannerId = scannerId,
+				//	ledOff = null
+				//};
+				//timers[scannerId].Elapsed += OnScanTimerElapsed;
 
 				_log.Debug("Barcode " + barcode + " recognized as type " + barcodeType);
 				Console.WriteLine("Barcode " + barcode + " recognized as type " + barcodeType);
@@ -279,48 +308,56 @@ namespace ZebraScannerRebuild
 				// case 5: prevScan: nid1		current: location1	-> prevScan: location1	timer: start	(nid scanned first - overwrite with location)
 				// case 6: prevScan: location1	current: location1	-> prevScan: location1	timer: start	(overwrite same location)
 				// case 7: prevScan: location1	current: location2 	-> prevScan: location2	timer: start	(overwrite new location)
-				// case 8: prevScan: location1	current: nid1 		-> prevScan: null		timer: start	(update nid's location in database)
+				// case 8: prevScan: location1	current: nid1 		-> prevScan: null		timer: stop		(update nid's location in database)
 
 				// cases 1 and 2
-				if (prevScan == null)
+				if (scanners[scannerId].prevScan == null)
 				{
 					//_scanTimer.Start();
-					timers[scannerId].Start();
-					prevScan = Tuple.Create(barcode, barcodeType);
+					//timers[scannerId].Start();
+					scanners[scannerId].timer.Start();
+					scanners[scannerId].prevScan = Tuple.Create(barcode, barcodeType);
+					//prevScan = Tuple.Create(barcode, barcodeType);
 				}
 				// cases 5,6,7
 				else if (barcodeType == BarcodeType.location)
 				{
 					//_scanTimer.Start();
-					timers[scannerId].Start();
-					prevScan = Tuple.Create(barcode, barcodeType);
+					//timers[scannerId].Start();
+					scanners[scannerId].timer.Start();
+					//prevScan = Tuple.Create(barcode, barcodeType);
+					scanners[scannerId].prevScan = Tuple.Create(barcode, barcodeType);
 				}
 				else
 				{
-					if (prevScan.Item2 == BarcodeType.nid)
+					if (scanners[scannerId].prevScan.Item2 == BarcodeType.nid)
 					{
 						// case 3
-						if (barcode.Equals(prevScan.Item1))
+						if (barcode.Equals(scanners[scannerId].prevScan.Item1))
 						{
-							SendNotification(e.ScannerId, notifications["tryDatabase"]);
+							SendNotification(scannerId, notifications["tryDatabase"]);
 							//UpdateDatabase(e.ScannerId, barcode);
-							prevScan = null;
+							//prevScan = null;
+							scanners[scannerId].prevScan = null;
 						}
 						// case 4
 						else
 						{
 							//_scanTimer.Start();
-							timers[scannerId].Start();
-							prevScan = Tuple.Create(barcode, barcodeType);
+							//timers[scannerId].Start();
+							scanners[scannerId].timer.Start();
+
+							//prevScan = Tuple.Create(barcode, barcodeType);
+							scanners[scannerId].prevScan = Tuple.Create(barcode, barcodeType);
 						}
 					}
 					// case 8
 					else
 					{
-						SendNotification(e.ScannerId, notifications["tryDatabase"]);
-						string location = prevScan.Item1;
+						SendNotification(scannerId, notifications["tryDatabase"]);
+						//string location = prevScan.Item1;
 						//UpdateDatabase(e.ScannerId, barcode, location);
-						prevScan = null;
+						scanners[scannerId].prevScan = null;
 					}
 				}
 			}
@@ -331,14 +368,12 @@ namespace ZebraScannerRebuild
 			// user didn't scan nid in time. 
 			// case 9/10 : prevScan defined -> undefined
 			Console.WriteLine("timer up!");
-
-
 			// FIX
 			_log.Error("Timed out waiting for barcode scan event");
 
-			uint scannerCradleId = ((ScannerTimer)source).scannerId;
-			SendNotification(scannerCradleId, notifications["timerUp"]);
-			prevScan = null;
+			// uint scannerId = ((ScannerTimer)source).scannerId;
+			SendNotification(((ScannerTimer)source).scannerId, notifications["timerUp"]);
+			scanners[((ScannerTimer)source).scannerId].prevScan = null;
 		}
 
 		private static void OnLedTimerElapsed(Object source, System.Timers.ElapsedEventArgs e)
@@ -347,7 +382,7 @@ namespace ZebraScannerRebuild
 			//uint scannerCradleId = ((ScannerTimer)source).scannerId;
 			LedMode ledOff = (LedMode)((ScannerTimer)source).ledOff;
 			//IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetScannerFromCradleId(scannerCradleId);
-			IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetDevices()[1];
+			IMotorolaBarcodeScanner scanner = scanners[((ScannerTimer)source).scannerId].scanner;
 
 			scanner.Actions.ToggleLed(ledOff);
 		}
@@ -380,7 +415,42 @@ namespace ZebraScannerRebuild
 			return match.Success;
 		}
 
-		public static void UpdateDatabase(uint scannerId, string nid, string location = null)
+		public static void SendNotification(int scannerId, Tuple<LedMode?, LedMode?, int, BeepPattern?> notificationParams)
+		{
+			//IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetScannerFromCradleId(scannerCradleId);
+			IMotorolaBarcodeScanner scanner = scanners[scannerId].scanner;
+
+			Console.WriteLine("scanner to notify: " + scanner.Info.ScannerId);
+
+			// sound beeper
+			if (notificationParams.Item4 != null)
+			{
+				scanner.Actions.SoundBeeper((BeepPattern)notificationParams.Item4);
+			}
+			// flash LED
+			if (notificationParams.Item1 != null && notificationParams.Item2 != null)
+			{
+				scanner.Actions.ToggleLed((LedMode)notificationParams.Item1);
+				//Thread.Sleep(notificationParams.Item3);
+				//scanner.Actions.ToggleLed((LedMode)notificationParams.Item2);
+				// start timer, and when timer is up, event handler turns off LED
+				var _ledTimer = new ScannerTimer
+				{
+					Interval = notificationParams.Item3,
+					AutoReset = false,
+					//scannerId = scannerCradleId,
+					scannerId = scanner.Info.ScannerId,
+					ledOff = (LedMode)notificationParams.Item2
+				};
+
+				//var _ledTimer = new System.Timers.Timer(notificationParams.Item3) { AutoReset = false };
+				_ledTimer.Elapsed += OnLedTimerElapsed;
+				Console.WriteLine("led timer started");
+				_ledTimer.Start();
+			}
+		}
+
+		public static void UpdateDatabase(int scannerId, string nid, string location = null)
 		{
 			// Execute a (SHELL) Command that runs python script to update database
 			using (var sshclient = new SshClient(ConnInfo))
@@ -440,41 +510,5 @@ namespace ZebraScannerRebuild
 				sshclient.Disconnect();
 			}
 		}
-
-		public static void SendNotification(uint scannerCradleId, Tuple<LedMode?, LedMode?, int, BeepPattern?> notificationParams)
-		{
-			//IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetScannerFromCradleId(scannerCradleId);
-			IMotorolaBarcodeScanner scanner = BarcodeScannerManager.Instance.GetDevices()[1];
-
-			Console.WriteLine("scanner to notify: " + scanner.Info.ScannerId);
-
-			// sound beeper
-			if (notificationParams.Item4 != null)
-			{
-				scanner.Actions.SoundBeeper((BeepPattern)notificationParams.Item4);
-			}
-			// flash LED
-			if (notificationParams.Item1 != null && notificationParams.Item2 != null)
-			{
-				scanner.Actions.ToggleLed((LedMode)notificationParams.Item1);
-				//Thread.Sleep(notificationParams.Item3);
-				//scanner.Actions.ToggleLed((LedMode)notificationParams.Item2);
-				// start timer, and when timer is up, event handler turns off LED
-				var _ledTimer = new ScannerTimer
-				{
-					Interval = notificationParams.Item3,
-					AutoReset = false,
-					//scannerId = scannerCradleId,
-					scannerId = (uint)scanner.Info.ScannerId,
-					ledOff = (LedMode)notificationParams.Item2
-				};
-
-				//var _ledTimer = new System.Timers.Timer(notificationParams.Item3) { AutoReset = false };
-				_ledTimer.Elapsed += OnLedTimerElapsed;
-				Console.WriteLine("led timer started");
-				_ledTimer.Start();
-			}
-		}
-
 	}
 }
